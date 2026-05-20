@@ -116,3 +116,5 @@ jobs:
           echo "✅ Frontend deployed successfully"
           echo "S3 Bucket: $S3_BUCKET"
           echo "CloudFront ID: $CLOUDFRONT_ID"
+  on:
+  workflow_dispatch:
