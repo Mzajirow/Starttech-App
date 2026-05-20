@@ -1,0 +1,118 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "Client/**"
+
+env:
+  AWS_REGION: eu-west-1
+  BUILD_DIR: Client/build
+
+jobs:
+
+# =============================
+# 1. BUILD + TEST + SECURITY
+# =============================
+  build:
+    name: Build React App
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Client
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      # Install dependencies (better than npm install)
+      - name: Install dependencies
+        run: npm ci
+
+      # Unit tests
+      - name: Skip tests
+        run: echo "No frontend tests configured yet"
+
+      # Security scanning (REQUIRED)
+      - name: Run npm security audit
+        run: npm audit --audit-level=high
+
+      # Build production bundle
+      - name: Build React app
+        run: npm run build
+
+      # Upload build artifact (IMPORTANT FIX)
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build
+
+
+# =============================
+# 2. DEPLOY STAGE
+# =============================
+  deploy:
+    name: Deploy to S3 + CloudFront
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Download build artifact (CRITICAL FIX)
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build
+
+      # Get Terraform outputs
+      - name: Download Terraform outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Extract Terraform values
+        run: |
+          echo "S3_BUCKET=$(jq -r '.s3_bucket_name.value' outputs.json)" >> $GITHUB_ENV
+          echo "CLOUDFRONT_ID=$(jq -r '.cloudfront_distribution_id.value' outputs.json)" >> $GITHUB_ENV
+
+      # AWS authentication
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Deploy to S3
+      - name: Sync build to S3
+        run: |
+          aws s3 sync $BUILD_DIR s3://$S3_BUCKET \
+            --delete
+
+      # CloudFront invalidation
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id $CLOUDFRONT_ID \
+            --paths "/*"
+
+      # Deployment notification (simple version)
+      - name: Deployment notification
+        run: |
+          echo "✅ Frontend deployed successfully"
+          echo "S3 Bucket: $S3_BUCKET"
+          echo "CloudFront ID: $CLOUDFRONT_ID"
