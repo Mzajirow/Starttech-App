@@ -148,5 +148,3 @@ jobs:
           echo "✅ Backend deployment completed successfully"
           echo "ASG: $ASG_NAME"
           echo "Image: $ECR_URL:${IMAGE_TAG}"
-    on:
-  workflow_dispatch:
