@@ -1,62 +1,53 @@
-name: Frontend CI/CD
+name: Backend CI/CD
 
 on:
   push:
     branches: ["main"]
     paths:
-      - "Client/**"
+      - "server/**"
 
 env:
   AWS_REGION: eu-west-1
-  BUILD_DIR: Client/build
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-
-  build:
-    name: Build React App
+# -----------------------------
+# 1. TEST GO APPLICATION
+# -----------------------------
+  test:
+    name: Test & Build Go App
     runs-on: ubuntu-latest
 
     defaults:
       run:
-        working-directory: Client
+        working-directory: backend
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          node-version: "18"
-          cache: "npm"
-          cache-dependency-path: Client/package-lock.json  # ✅ Fix 4
+          go-version: "1.22"
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Download dependencies
+        run: go mod tidy
 
-      - name: Run npm security audit
-        run: npm audit --audit-level=high --omit=dev  # ✅ Fix 5
+      - name: Run tests
+        run: go test ./...
 
-      - name: Build React app
-        run: npm run build
+      - name: Build binary
+        run: go build -o app
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-build
-          path: ${{ env.BUILD_DIR }}  # ✅ Fix 1
-
-  deploy:
-    name: Deploy to S3 + CloudFront
-    needs: build
+  docker:
+    name: Build & Push Docker Image
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-build
-          path: ${{ env.BUILD_DIR }}  # ✅ Fix 2
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -65,19 +56,72 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Sync build to S3
-        run: |
-          aws s3 sync ${{ env.BUILD_DIR }} s3://${{ vars.S3_BUCKET_NAME }} \  # ✅ Fix 3
-            --delete
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Invalidate CloudFront cache
+      - name: Build Docker image
         run: |
-          aws cloudfront create-invalidation \
-            --distribution-id ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }} \  # ✅ Fix 3
-            --paths "/*"
+          docker build -t backend:${IMAGE_TAG} ./backend
 
-      - name: Deployment notification
+      - name: Tag image for ECR
         run: |
-          echo "✅ Frontend deployed successfully"
-          echo "S3 Bucket: ${{ vars.S3_BUCKET_NAME }}"
-          echo "CloudFront ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}"
+          docker tag backend:${IMAGE_TAG} $ECR_URL:${IMAGE_TAG}
+
+      - name: Push image to ECR
+        run: |
+          docker push $ECR_URL:${IMAGE_TAG}
+
+  deploy:
+    name: Deploy via Terraform Outputs (Rolling Update)
+    needs: docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -----------------------------
+      # Download Terraform outputs
+      # -----------------------------
+      - name: Download Terraform outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+
+      # -----------------------------
+      # Extract values from Terraform
+      # -----------------------------
+      - name: Parse Terraform outputs
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+          echo "ECR_URL=$(jq -r '.ecr_url.value' outputs.json)" >> $GITHUB_ENV
+          echo "ASG_NAME=$(jq -r '.asg_name.value' outputs.json)" >> $GITHUB_ENV
+
+      # -----------------------------
+      # AWS authentication
+      # -----------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # -----------------------------
+      # Trigger rolling deployment
+      # -----------------------------
+      - name: Start ASG Instance Refresh
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --preferences '{
+              "MinHealthyPercentage": 75,
+              "InstanceWarmup": 60
+            }'
+
+      - name: Deployment Status
+        run: |
+          echo "Deployment triggered successfully"
+          echo "ASG: $ASG_NAME"
+          echo "ECR: $ECR_URL"
