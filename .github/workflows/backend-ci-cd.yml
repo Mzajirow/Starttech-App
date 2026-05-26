@@ -11,16 +11,16 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-# -----------------------------
-# 1. TEST GO APPLICATION
-# -----------------------------
+  # -----------------------------
+  # 1. TEST GO APPLICATION
+  # -----------------------------
   test:
     name: Test & Build Go App
     runs-on: ubuntu-latest
 
     defaults:
       run:
-        working-directory: backend
+        working-directory: server
 
     steps:
       - name: Checkout code
@@ -61,7 +61,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t backend:${IMAGE_TAG} ./backend
+          docker build -t backend:${IMAGE_TAG} ./server
 
       - name: Tag image for ECR
         run: |
