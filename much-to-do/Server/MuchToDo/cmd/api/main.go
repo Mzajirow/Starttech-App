@@ -71,8 +71,6 @@ func main() {
 	}()
 	slog.Info("Successfully connected to MongoDB.")
 
-	fmt.Println("Mongo URI:", cfg.MongoURI)
-
 	// 3. Initialize Services (Cache, Auth)
 	cacheService := cache.NewCacheService(cfg)
 	tokenService := auth.NewTokenService(cfg.JWTSecretKey, cfg.JWTExpirationHours)
